@@ -57,3 +57,6 @@ from agent_harness.memory.store import FileMemoryStore, MemoryEntry
 
 # LangGraph Integration
 from agent_harness.integrations.langgraph import as_langgraph_node
+
+# Built-in Tools
+from agent_harness.builtins import ALL_TOOLS as BUILTIN_TOOLS
