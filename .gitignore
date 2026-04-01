@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.agent_memory/
+.test_agent_memory/
+.env
+*.egg

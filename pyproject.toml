@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "agent-harness"
+version = "0.1.0"
+description = "A model-agnostic Python agent harness inspired by Claude Code's architecture"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.40.0"]
+openai = ["openai>=1.50.0"]
+langgraph = ["langgraph>=0.2.0"]
+all = [
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "langgraph>=0.2.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["agent_harness*"]
