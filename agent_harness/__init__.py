@@ -19,7 +19,7 @@ Quick start:
         print(event.type, event)
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # Core types
 from agent_harness.types import (
@@ -57,6 +57,14 @@ from agent_harness.memory.store import FileMemoryStore, MemoryEntry
 
 # LangGraph Integration
 from agent_harness.integrations.langgraph import as_langgraph_node
+
+# Prompt Engineering
+from agent_harness.prompts.sections import PromptSection, SectionPriority
+from agent_harness.prompts.builder import SystemPromptBuilder
+from agent_harness.prompts.agent_types import AgentType
+from agent_harness.prompts.environment import compute_environment_info
+from agent_harness.prompts.session import generate_session_guidance
+from agent_harness.prompts.tool_descriptions import enrich_tools, get_rich_description
 
 # Built-in Tools
 from agent_harness.builtins import ALL_TOOLS as BUILTIN_TOOLS

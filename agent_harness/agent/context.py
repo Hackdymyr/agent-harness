@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 from uuid import uuid4
 
 from agent_harness.llm.base import BaseLLM
 from agent_harness.tools.base import ToolRegistry
 from agent_harness.tools.permissions import PermissionChecker, PermissionMode
+
+if TYPE_CHECKING:
+    from agent_harness.prompts.builder import SystemPromptBuilder
 
 
 @dataclass
@@ -22,6 +25,10 @@ class AgentContext:
 
     Holds messages, tools, LLM client, permissions, and extensible metadata.
     Sub-agents receive an isolated copy via fork().
+
+    system_prompt accepts either a plain string or a SystemPromptBuilder
+    for rich, section-based prompt composition. Use resolve_system_prompt()
+    to get the final string.
     """
 
     messages: list[dict[str, Any]]
@@ -30,7 +37,7 @@ class AgentContext:
     permissions: PermissionChecker = field(
         default_factory=lambda: PermissionChecker(default_mode=PermissionMode.AUTO_ALLOW)
     )
-    system_prompt: str | None = None
+    system_prompt: str | SystemPromptBuilder | None = None
     max_tokens: int = 4096
     max_turns: int = 100
     temperature: float = 0.0
@@ -77,6 +84,19 @@ class AgentContext:
     def abort(self) -> None:
         """Signal this agent to stop."""
         self.abort_event.set()
+
+    def resolve_system_prompt(self) -> str | None:
+        """Resolve system_prompt to a plain string for LLM calls.
+
+        If system_prompt is a SystemPromptBuilder, calls build().
+        If it's a string or None, returns as-is.
+        """
+        if self.system_prompt is None:
+            return None
+        if isinstance(self.system_prompt, str):
+            return self.system_prompt
+        # SystemPromptBuilder
+        return self.system_prompt.build()
 
     @property
     def is_aborted(self) -> bool:

@@ -106,7 +106,7 @@ class AgentLoop:
                 response: LLMResponse = await self.context.llm.chat(
                     messages=messages_for_query,
                     tools=self.context.tools.definitions() if len(self.context.tools) > 0 else None,
-                    system=self.context.system_prompt,
+                    system=self.context.resolve_system_prompt(),
                     max_tokens=self.context.max_tokens,
                     temperature=self.context.temperature,
                 )

@@ -7,13 +7,16 @@ and injects the result back into the parent conversation.
 
 from __future__ import annotations
 
-from typing import Any, AsyncGenerator
+from typing import Any, AsyncGenerator, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from agent_harness.agent.context import AgentContext
 from agent_harness.agent.loop import AgentEvent, AgentLoop
 from agent_harness.tools.base import BaseTool, ToolResult
+
+if TYPE_CHECKING:
+    from agent_harness.prompts.agent_types import AgentType
 
 
 class SubAgent:
@@ -28,6 +31,15 @@ class SubAgent:
             max_turns=20,
         )
         result = await sub.run_to_completion()
+
+    With agent type:
+        from agent_harness.prompts import AgentType
+        sub = SubAgent(
+            parent_context=ctx,
+            prompt="Explore the authentication module",
+            agent_type=AgentType.EXPLORE,
+            tool_names={"read_file", "grep", "glob", "list_dir"},
+        )
     """
 
     def __init__(
@@ -35,11 +47,28 @@ class SubAgent:
         parent_context: AgentContext,
         prompt: str,
         system_prompt: str | None = None,
+        agent_type: AgentType | None = None,
         tool_names: set[str] | None = None,
         exclude_tool_names: set[str] | None = None,
         max_turns: int = 30,
         max_tokens: int | None = None,
     ):
+        # Resolve system prompt: agent_type takes precedence as base,
+        # then system_prompt can override or be used standalone.
+        resolved_prompt: str | Any = system_prompt
+        if agent_type is not None:
+            from agent_harness.prompts.builder import SystemPromptBuilder
+            builder = SystemPromptBuilder.for_agent_type(agent_type)
+            if system_prompt:
+                # Append user's custom prompt to the agent type profile
+                from agent_harness.prompts.sections import PromptSection, SectionPriority
+                builder.add_section(PromptSection(
+                    name="custom_instructions",
+                    content=system_prompt,
+                    priority=SectionPriority.CUSTOM,
+                ))
+            resolved_prompt = builder
+
         # Filter tools for the child
         filtered_tools = parent_context.tools.filter(
             names=tool_names,
@@ -48,7 +77,7 @@ class SubAgent:
 
         self.child_context = parent_context.fork(
             tools=filtered_tools,
-            system_prompt=system_prompt,
+            system_prompt=resolved_prompt,
             max_turns=max_turns,
             max_tokens=max_tokens,
         )
