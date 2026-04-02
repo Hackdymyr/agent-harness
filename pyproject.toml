@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-harness"
-version = "0.2.0"
+version = "0.3.0"
 description = "A model-agnostic Python agent harness inspired by Claude Code's architecture"
 requires-python = ">=3.11"
 dependencies = [

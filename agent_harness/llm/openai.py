@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any, AsyncIterator
 
+from agent_harness.llm.retry import RetryConfig, with_retry
 from agent_harness.types import (
     LLMResponse,
     Message,
     Role,
     StopReason,
+    StreamEvent,
     ToolCall,
     ToolDefinition,
     Usage,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _messages_to_openai(
@@ -109,14 +115,10 @@ def _tools_to_openai(tools: list[ToolDefinition]) -> list[dict[str, Any]]:
 
 
 def _json_dumps(obj: Any) -> str:
-    import json
-
     return json.dumps(obj, ensure_ascii=False)
 
 
 def _json_loads(s: str) -> Any:
-    import json
-
     try:
         return json.loads(s)
     except (json.JSONDecodeError, TypeError):
@@ -162,14 +164,15 @@ def _parse_openai_response(response: Any) -> LLMResponse:
 
 
 class OpenAILLM:
-    """OpenAI SDK adapter."""
+    """OpenAI SDK adapter with retry support and streaming."""
 
     def __init__(
         self,
         model: str = "gpt-4o",
         api_key: str | None = None,
         base_url: str | None = None,
-        max_retries: int = 2,
+        max_retries: int = 0,
+        retry_config: RetryConfig | None = None,
     ):
         try:
             from openai import AsyncOpenAI
@@ -183,6 +186,28 @@ class OpenAILLM:
             kwargs["base_url"] = base_url
         self.client = AsyncOpenAI(**kwargs)
         self.model = model
+        self.retry_config = retry_config
+
+    def _build_create_kwargs(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[ToolDefinition] | None,
+        system: str | None,
+        max_tokens: int,
+        temperature: float,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        api_messages = _messages_to_openai(messages, system)
+        create_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": api_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            **kwargs,
+        }
+        if tools:
+            create_kwargs["tools"] = _tools_to_openai(tools)
+        return create_kwargs
 
     async def chat(
         self,
@@ -193,20 +218,17 @@ class OpenAILLM:
         temperature: float = 0.0,
         **kwargs: Any,
     ) -> LLMResponse:
-        api_messages = _messages_to_openai(messages, system)
+        create_kwargs = self._build_create_kwargs(
+            messages, tools, system, max_tokens, temperature, **kwargs
+        )
 
-        create_kwargs: dict[str, Any] = {
-            "model": self.model,
-            "messages": api_messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            **kwargs,
-        }
-        if tools:
-            create_kwargs["tools"] = _tools_to_openai(tools)
+        async def _call() -> LLMResponse:
+            response = await self.client.chat.completions.create(**create_kwargs)
+            return _parse_openai_response(response)
 
-        response = await self.client.chat.completions.create(**create_kwargs)
-        return _parse_openai_response(response)
+        if self.retry_config:
+            return await with_retry(_call, self.retry_config)
+        return await _call()
 
     async def chat_stream(
         self,
@@ -216,7 +238,78 @@ class OpenAILLM:
         max_tokens: int = 4096,
         temperature: float = 0.0,
         **kwargs: Any,
-    ) -> AsyncIterator[LLMResponse]:
-        # Simplified: collect full response then yield
-        result = await self.chat(messages, tools, system, max_tokens, temperature, **kwargs)
-        yield result
+    ) -> AsyncIterator[StreamEvent]:
+        create_kwargs = self._build_create_kwargs(
+            messages, tools, system, max_tokens, temperature, **kwargs
+        )
+        create_kwargs["stream"] = True
+        create_kwargs["stream_options"] = {"include_usage": True}
+
+        yield StreamEvent(type="message_start")
+
+        # Accumulate state for building final response
+        text_parts: list[str] = []
+        tool_calls_acc: dict[int, dict[str, Any]] = {}  # index → {id, name, arguments}
+        finish_reason: str | None = None
+        usage_input = 0
+        usage_output = 0
+
+        stream = await self.client.chat.completions.create(**create_kwargs)
+        async for chunk in stream:
+            if not chunk.choices and hasattr(chunk, "usage") and chunk.usage:
+                # Final usage-only chunk (stream_options)
+                usage_input = getattr(chunk.usage, "prompt_tokens", 0)
+                usage_output = getattr(chunk.usage, "completion_tokens", 0)
+                continue
+
+            if not chunk.choices:
+                continue
+
+            delta = chunk.choices[0].delta
+            fr = chunk.choices[0].finish_reason
+
+            if fr:
+                finish_reason = fr
+
+            # Text delta
+            if delta.content:
+                text_parts.append(delta.content)
+                yield StreamEvent(type="text_delta", text=delta.content)
+
+            # Tool call deltas
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in tool_calls_acc:
+                        tool_calls_acc[idx] = {
+                            "id": tc_delta.id or "",
+                            "name": "",
+                            "arguments": "",
+                        }
+                    if tc_delta.id:
+                        tool_calls_acc[idx]["id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            tool_calls_acc[idx]["name"] = tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            tool_calls_acc[idx]["arguments"] += tc_delta.function.arguments
+                            yield StreamEvent(
+                                type="tool_input_delta",
+                                text=tc_delta.function.arguments,
+                                index=idx,
+                                tool_call_id=tool_calls_acc[idx]["id"],
+                                tool_name=tool_calls_acc[idx]["name"],
+                            )
+
+        # Map finish_reason
+        stop_map = {
+            "stop": StopReason.END_TURN,
+            "tool_calls": StopReason.TOOL_USE,
+            "length": StopReason.MAX_TOKENS,
+        }
+
+        yield StreamEvent(
+            type="message_done",
+            stop_reason=stop_map.get(finish_reason or "stop", StopReason.END_TURN),
+            usage=Usage(input_tokens=usage_input, output_tokens=usage_output),
+        )

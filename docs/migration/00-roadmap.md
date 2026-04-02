@@ -10,7 +10,7 @@
 |------|------|------|------|
 | v0.1.0 | 核心架构 (AgentLoop, Tools, Permissions, SubAgent, Memory, Tasks, LangGraph) | ✅ 已完成 | — |
 | v0.2.0 | 富提示词工程 (SystemPromptBuilder, AgentType, Rich Tool Descriptions) | ✅ 已完成 | — |
-| **v0.3.0** | **API 重试 + 流式输出** | ⬜ 待开始 | [01-retry-streaming.md](01-retry-streaming.md) |
+| **v0.3.0** | **API 重试 + 流式输出** | ✅ 已完成 | [01-retry-streaming.md](01-retry-streaming.md) |
 | **v0.4.0** | **上下文压缩 (Compaction)** | ⬜ 待开始 | [02-compaction.md](02-compaction.md) |
 | **v0.5.0** | **Hook 系统 + Plan 模式 + Bash 安全校验** | ⬜ 待开始 | [03-hooks-plan-bash-safety.md](03-hooks-plan-bash-safety.md) |
 | **v0.6.0** | **Coordinator 多 Agent 编排** | ⬜ 待开始 | [04-coordinator.md](04-coordinator.md) |

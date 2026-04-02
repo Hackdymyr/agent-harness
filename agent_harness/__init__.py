@@ -19,7 +19,7 @@ Quick start:
         print(event.type, event)
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # Core types
 from agent_harness.types import (
@@ -27,6 +27,7 @@ from agent_harness.types import (
     Message,
     Role,
     StopReason,
+    StreamEvent,
     ToolCall,
     ToolDefinition,
     ToolResultContent,
@@ -48,6 +49,16 @@ from agent_harness.llm.base import BaseLLM
 from agent_harness.llm.anthropic import AnthropicLLM
 from agent_harness.llm.openai import OpenAILLM
 from agent_harness.llm.openai_compat import OpenAICompatLLM
+
+# Retry Engine
+from agent_harness.llm.retry import (
+    ErrorCategory,
+    RetryConfig,
+    RetryExhaustedError,
+    classify_error,
+    should_retry,
+    with_retry,
+)
 
 # Task Tracking
 from agent_harness.tasks.tracker import Task, TaskStatus, TaskTracker

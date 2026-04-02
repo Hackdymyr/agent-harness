@@ -68,3 +68,24 @@ class ToolDefinition(BaseModel):
     name: str
     description: str
     input_schema: dict[str, Any] = Field(default_factory=dict)
+
+
+class StreamEvent(BaseModel):
+    """Event yielded during streaming LLM responses.
+
+    Different event types carry different fields:
+    - text_delta: incremental text, carries `text`
+    - tool_input_delta: incremental tool JSON, carries `text` (partial JSON) and `index`
+    - message_start: beginning of response, may carry `usage`
+    - message_done: end of response, carries `stop_reason` and `usage`
+    - content_block_start: start of a content block, carries `index`
+    - content_block_stop: end of a content block, carries `index`
+    """
+
+    type: str  # text_delta, tool_input_delta, message_start, message_done, etc.
+    text: str | None = None
+    index: int | None = None
+    usage: Usage | None = None
+    stop_reason: StopReason | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None

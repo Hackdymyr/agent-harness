@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any, AsyncIterator
 
+from agent_harness.llm.retry import RetryConfig, with_retry
 from agent_harness.types import (
     LLMResponse,
     Message,
     Role,
     StopReason,
+    StreamEvent,
     ToolCall,
     ToolDefinition,
     ToolResultContent,
     Usage,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _messages_to_anthropic(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -147,20 +153,22 @@ def _parse_anthropic_response(response: Any) -> LLMResponse:
 
 
 class AnthropicLLM:
-    """Anthropic SDK adapter."""
+    """Anthropic SDK adapter with retry support and real streaming."""
 
     def __init__(
         self,
         model: str = "claude-sonnet-4-20250514",
         api_key: str | None = None,
         base_url: str | None = None,
-        max_retries: int = 2,
+        max_retries: int = 0,
+        retry_config: RetryConfig | None = None,
     ):
         try:
             import anthropic
         except ImportError:
             raise ImportError("pip install anthropic")
 
+        # SDK-level retries disabled; we use our own retry engine
         kwargs: dict[str, Any] = {"max_retries": max_retries}
         if api_key:
             kwargs["api_key"] = api_key
@@ -168,6 +176,30 @@ class AnthropicLLM:
             kwargs["base_url"] = base_url
         self.client = anthropic.AsyncAnthropic(**kwargs)
         self.model = model
+        self.retry_config = retry_config
+
+    def _build_create_kwargs(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[ToolDefinition] | None,
+        system: str | None,
+        max_tokens: int,
+        temperature: float,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        api_messages = _messages_to_anthropic(messages)
+        create_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": api_messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            **kwargs,
+        }
+        if system:
+            create_kwargs["system"] = system
+        if tools:
+            create_kwargs["tools"] = _tools_to_anthropic(tools)
+        return create_kwargs
 
     async def chat(
         self,
@@ -178,22 +210,17 @@ class AnthropicLLM:
         temperature: float = 0.0,
         **kwargs: Any,
     ) -> LLMResponse:
-        api_messages = _messages_to_anthropic(messages)
+        create_kwargs = self._build_create_kwargs(
+            messages, tools, system, max_tokens, temperature, **kwargs
+        )
 
-        create_kwargs: dict[str, Any] = {
-            "model": self.model,
-            "messages": api_messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            **kwargs,
-        }
-        if system:
-            create_kwargs["system"] = system
-        if tools:
-            create_kwargs["tools"] = _tools_to_anthropic(tools)
+        async def _call() -> LLMResponse:
+            response = await self.client.messages.create(**create_kwargs)
+            return _parse_anthropic_response(response)
 
-        response = await self.client.messages.create(**create_kwargs)
-        return _parse_anthropic_response(response)
+        if self.retry_config:
+            return await with_retry(_call, self.retry_config)
+        return await _call()
 
     async def chat_stream(
         self,
@@ -203,21 +230,49 @@ class AnthropicLLM:
         max_tokens: int = 4096,
         temperature: float = 0.0,
         **kwargs: Any,
-    ) -> AsyncIterator[LLMResponse]:
-        api_messages = _messages_to_anthropic(messages)
+    ) -> AsyncIterator[StreamEvent]:
+        create_kwargs = self._build_create_kwargs(
+            messages, tools, system, max_tokens, temperature, **kwargs
+        )
 
-        create_kwargs: dict[str, Any] = {
-            "model": self.model,
-            "messages": api_messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            **kwargs,
-        }
-        if system:
-            create_kwargs["system"] = system
-        if tools:
-            create_kwargs["tools"] = _tools_to_anthropic(tools)
+        # Track state for content blocks
+        current_tool_id: dict[int, str] = {}   # index → tool_use id
+        current_tool_name: dict[int, str] = {}  # index → tool name
 
         async with self.client.messages.stream(**create_kwargs) as stream:
+            yield StreamEvent(type="message_start")
+
+            async for event in stream:
+                if event.type == "content_block_start":
+                    idx = event.index
+                    block = event.content_block
+                    if block.type == "tool_use":
+                        current_tool_id[idx] = block.id
+                        current_tool_name[idx] = block.name
+                    yield StreamEvent(type="content_block_start", index=idx)
+
+                elif event.type == "content_block_delta":
+                    idx = event.index
+                    delta = event.delta
+                    if delta.type == "text_delta":
+                        yield StreamEvent(type="text_delta", text=delta.text, index=idx)
+                    elif delta.type == "input_json_delta":
+                        yield StreamEvent(
+                            type="tool_input_delta",
+                            text=delta.partial_json,
+                            index=idx,
+                            tool_call_id=current_tool_id.get(idx),
+                            tool_name=current_tool_name.get(idx),
+                        )
+
+                elif event.type == "content_block_stop":
+                    yield StreamEvent(type="content_block_stop", index=event.index)
+
+            # Get the final message for complete response
             final = await stream.get_final_message()
-            yield _parse_anthropic_response(final)
+            parsed = _parse_anthropic_response(final)
+            yield StreamEvent(
+                type="message_done",
+                stop_reason=parsed.stop_reason,
+                usage=parsed.usage,
+            )
