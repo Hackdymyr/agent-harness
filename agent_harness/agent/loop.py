@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Callable, Literal
 
 from agent_harness.agent.context import AgentContext
+from agent_harness.compact.auto_compact import AutoCompactState, auto_compact_if_needed
+from agent_harness.compact.compactor import CompactConfig
 from agent_harness.tools.orchestration import execute_tool_calls
 from agent_harness.types import (
     LLMResponse,
@@ -36,7 +38,7 @@ STREAM_IDLE_TIMEOUT_S = 90
 class AgentEvent:
     """Yielded by the agent loop. Mirrors Claude Code's SDKMessage union."""
 
-    type: Literal["message", "tool_call", "tool_result", "stream_delta", "error", "done"]
+    type: Literal["message", "tool_call", "tool_result", "stream_delta", "compaction", "error", "done"]
     message: Message | None = None
     tool_call: ToolCall | None = None
     tool_result: ToolResultContent | None = None
@@ -52,7 +54,7 @@ class AgentLoop:
     - Stateful: maintains conversation in context.messages
     - AsyncGenerator: yields events as they happen
     - Recovery: handles max_tokens with retry
-    - Context management: truncates when messages grow too long
+    - Context management: auto compaction (LLM summary) + micro compaction + truncation fallback
     - Streaming: optional real-time token streaming via streaming=True
 
     Usage:
@@ -76,6 +78,8 @@ class AgentLoop:
         max_context_messages: int | None = None,
         streaming: bool = False,
         stream_idle_timeout: float = STREAM_IDLE_TIMEOUT_S,
+        compact_config: CompactConfig | None = None,
+        enable_auto_compact: bool = True,
     ):
         self.context = context
         self.on_tool_start = on_tool_start
@@ -83,6 +87,9 @@ class AgentLoop:
         self.max_context_messages = max_context_messages
         self.streaming = streaming
         self.stream_idle_timeout = stream_idle_timeout
+        self.compact_config = compact_config
+        self.enable_auto_compact = enable_auto_compact
+        self._auto_compact_state = AutoCompactState()
 
     async def run(
         self, user_input: str | list[dict[str, Any]]
@@ -104,6 +111,7 @@ class AgentLoop:
 
         turn_count = 0
         max_tokens_retries = 0
+        self._pending_compaction_event = None
 
         while turn_count < self.context.max_turns:
             turn_count += 1
@@ -113,8 +121,23 @@ class AgentLoop:
                 yield AgentEvent(type="error", error="Agent aborted")
                 return
 
-            # Context window management
-            messages_for_query = self._manage_context(self.context.messages)
+            # Context window management (may trigger compaction)
+            messages_for_query = await self._manage_context(self.context.messages)
+
+            # Yield compaction event if compaction occurred
+            if self._pending_compaction_event is not None:
+                result = self._pending_compaction_event
+                self._pending_compaction_event = None
+                yield AgentEvent(
+                    type="compaction",
+                    message=Message(
+                        role=Role.SYSTEM,
+                        content=(
+                            f"[Compaction: {result.pre_compact_tokens} -> "
+                            f"{result.post_compact_tokens} estimated tokens]"
+                        ),
+                    ),
+                )
 
             # Call LLM (streaming or batch)
             try:
@@ -291,21 +314,37 @@ class AgentLoop:
                 logger.error(f"Agent error: {event.error}")
         return final
 
-    def _manage_context(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Truncate context if too many messages.
+    async def _manage_context(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Manage context window with compaction support.
 
-        Simple strategy: keep first message (often the initial user prompt)
-        and the last N messages. Claude Code uses sophisticated compaction
-        (summarization, microcompact, etc.) — we use truncation as the 80/20.
+        Strategy (mirrors Claude Code's query.ts execution order):
+        1. Auto compact (LLM summary) if enabled and threshold exceeded
+        2. Fall back to simple truncation if max_context_messages is set
+
+        When auto compaction runs successfully, it replaces context.messages
+        in-place and yields a compaction event.
         """
-        if self.max_context_messages is None:
-            return messages
+        # Auto compaction (LLM-based)
+        if self.enable_auto_compact:
+            config = self.compact_config or CompactConfig(
+                context_window=self.context.context_window
+            )
+            result = await auto_compact_if_needed(
+                messages,
+                self.context.llm,
+                config,
+                self._auto_compact_state,
+            )
+            if result and result.was_compacted:
+                self.context.messages[:] = result.messages
+                self._pending_compaction_event = result
+                return result.messages
 
-        if len(messages) <= self.max_context_messages:
-            return messages
+        # Fallback: simple truncation
+        if self.max_context_messages is not None and len(messages) > self.max_context_messages:
+            return [messages[0]] + messages[-(self.max_context_messages - 1):]
 
-        # Keep first message + last (max_context_messages - 1) messages
-        return [messages[0]] + messages[-(self.max_context_messages - 1):]
+        return messages
 
 
 async def _stream_with_watchdog(

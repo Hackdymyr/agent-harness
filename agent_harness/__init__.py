@@ -19,7 +19,7 @@ Quick start:
         print(event.type, event)
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 # Core types
 from agent_harness.types import (
@@ -76,6 +76,22 @@ from agent_harness.prompts.agent_types import AgentType
 from agent_harness.prompts.environment import compute_environment_info
 from agent_harness.prompts.session import generate_session_guidance
 from agent_harness.prompts.tool_descriptions import enrich_tools, get_rich_description
+
+# Compaction
+from agent_harness.compact import (
+    AutoCompactState,
+    CompactConfig,
+    CompactResult,
+    auto_compact_if_needed,
+    compact_conversation,
+    estimate_message_tokens,
+    estimate_messages_tokens,
+    format_compact_summary,
+    group_messages_by_round,
+    micro_compact,
+    rough_token_count,
+    should_auto_compact,
+)
 
 # Built-in Tools
 from agent_harness.builtins import ALL_TOOLS as BUILTIN_TOOLS

@@ -47,6 +47,9 @@ class AgentContext:
     agent_id: str = field(default_factory=lambda: f"agent_{uuid4().hex[:8]}")
     parent_context: AgentContext | None = None
 
+    # Context window size (used by auto compaction to decide thresholds)
+    context_window: int = 200_000
+
     # Extensible metadata (replaces Claude Code's AppState)
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -75,6 +78,7 @@ class AgentContext:
             max_tokens=max_tokens if max_tokens is not None else self.max_tokens,
             max_turns=max_turns if max_turns is not None else self.max_turns,
             temperature=self.temperature,
+            context_window=self.context_window,
             abort_event=asyncio.Event(),  # Independent abort
             agent_id=f"agent_{uuid4().hex[:8]}",
             parent_context=self,
