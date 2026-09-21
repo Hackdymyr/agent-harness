@@ -8,6 +8,9 @@
   <a href="README.md">English</a> | <a href="README_zh.md">中文</a>
 </p>
 
+> [!WARNING]
+> **本项目已停止维护。** 已于 2026 年 9 月归档，不再更新或修复问题。代码以 [MIT 许可证](LICENSE) 发布，欢迎 fork 后自行继续开发。
+
 ---
 
 ## 简介
